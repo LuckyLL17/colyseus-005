@@ -1,0 +1,62 @@
+{
+  "name": "@colyseus/testing",
+  "version": "0.18.5",
+  "type": "module",
+  "description": "Testing tools for Colyseus",
+  "input": "./src/index.ts",
+  "main": "./build/index.cjs",
+  "module": "./src/index.ts",
+  "typings": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "@source": "./src/index.ts",
+      "types": "./build/index.d.ts",
+      "import": "./build/index.mjs",
+      "require": "./build/index.cjs"
+    },
+    "./*": {
+      "@source": "./src/*.ts",
+      "types": "./build/*.d.ts",
+      "import": "./build/*.mjs",
+      "require": "./build/*.cjs"
+    }
+  },
+  "scripts": {
+    "test": "TS_NODE_PROJECT=../../tsconfig/tsconfig.test.json mocha --require tsx test/**.test.ts test/**/**.test.ts --exit --timeout 15000",
+    "tslint": "tslint --project . --config ../../tslint.json"
+  },
+  "author": "Endel Dreyer",
+  "license": "MIT",
+  "files": [
+    "build",
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/colyseus/colyseus.git"
+  },
+  "homepage": "https://colyseus.io/",
+  "engines": {
+    "node": ">= 22.x"
+  },
+  "dependencies": {
+    "httpie": "^2.0.0-next.13"
+  },
+  "devDependencies": {
+    "@colyseus/auth": "workspace:^",
+    "@colyseus/core": "workspace:^",
+    "@colyseus/schema": "^5.0.8",
+    "@colyseus/sdk": "workspace:^",
+    "@colyseus/tools": "workspace:^",
+    "@colyseus/ws-transport": "workspace:^"
+  },
+  "peerDependencies": {
+    "@colyseus/core": "0.18.x",
+    "@colyseus/sdk": "0.18.x",
+    "@colyseus/tools": "0.18.x"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  }
+}

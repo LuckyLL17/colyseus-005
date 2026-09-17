@@ -1,0 +1,69 @@
+{
+  "name": "@colyseus/loadtest",
+  "version": "0.18.2",
+  "description": "Utility tool for load testing Colyseus.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@source": "./src/index.ts",
+      "types": "./build/index.d.ts",
+      "import": "./build/index.mjs",
+      "require": "./build/index.cjs"
+    },
+    "./*": {
+      "@source": "./src/*.ts",
+      "types": "./build/*.d.ts",
+      "import": "./build/*.mjs",
+      "require": "./build/*.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "input": "./src/index.ts",
+  "main": "./build/index.cjs",
+  "module": "./build/index.mjs",
+  "typings": "./build/index.d.ts",
+  "bin": {
+    "colyseus-loadtest": "./bin.cjs"
+  },
+  "files": [
+    "build",
+    "src",
+    "bin.js",
+    "bin.mjs",
+    "tsconfig.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/colyseus/colyseus.git"
+  },
+  "homepage": "https://colyseus.io/",
+  "engines": {
+    "node": ">= 22.x"
+  },
+  "keywords": [
+    "colyseus",
+    "load",
+    "test",
+    "load",
+    "testing"
+  ],
+  "author": "Endel Dreyer",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/colyseus/colyseus/issues"
+  },
+  "dependencies": {
+    "@colyseus/sdk": "workspace:^",
+    "blessed": "^0.1.81",
+    "minimist": "^1.2.5",
+    "typescript": "^6.0.3",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/blessed": "^0.1.10"
+  },
+  "gitHead": "c45b410e99eadffff4b74e701339992e2faa15f8",
+  "publishConfig": {
+    "tag": "next"
+  }
+}

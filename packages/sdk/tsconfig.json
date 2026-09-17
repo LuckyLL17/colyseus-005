@@ -1,0 +1,35 @@
+{
+    "extends": "./tsconfig/tsconfig.all.json",
+    "compilerOptions": {
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "emitDeclarationOnly": true,
+
+        "target": "es6",
+        "outDir": "build",
+        "rootDir": "src",
+        "declaration": true,
+        "stripInternal": true,
+        "allowSyntheticDefaultImports": true,
+
+        "strictNullChecks": false,
+        "noImplicitAny": false,
+
+        "esModuleInterop": true,
+        "experimentalDecorators": true,
+        "inlineSources": true,
+        "skipLibCheck": true,
+        "composite": false
+    },
+    "include": [
+        "src/**/*.ts",
+        "typings/cocos-creator.d.ts"
+    ],
+    "exclude": [
+        "node_modules",
+        "build",
+        "dist",
+        "lib",
+        "test"
+    ]
+}

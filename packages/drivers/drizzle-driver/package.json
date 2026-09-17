@@ -1,0 +1,59 @@
+{
+  "name": "@colyseus/drizzle-driver",
+  "version": "0.18.2",
+  "type": "module",
+  "input": "./src/index.ts",
+  "main": "./build/index.cjs",
+  "module": "./src/index.ts",
+  "typings": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "@source": "./src/index.ts",
+      "types": "./build/index.d.ts",
+      "import": "./build/index.mjs",
+      "require": "./build/index.cjs"
+    },
+    "./*": {
+      "@source": "./src/*.ts",
+      "types": "./build/*.d.ts",
+      "import": "./build/*.mjs",
+      "require": "./build/*.cjs"
+    }
+  },
+  "dependencies": {
+    "@colyseus/core": "workspace:^",
+    "drizzle-orm": "^0.38.4",
+    "postgres": "^3.4.7"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.30.6"
+  },
+  "peerDependencies": {
+    "drizzle-kit": "^0.30.6",
+    "drizzle-orm": "^0.38.4"
+  },
+  "author": "Endel Dreyer",
+  "license": "MIT",
+  "keywords": [
+    "colyseus",
+    "matchmaking",
+    "driver",
+    "drizzle"
+  ],
+  "files": [
+    "build",
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/colyseus/colyseus.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "homepage": "https://colyseus.io/",
+  "engines": {
+    "node": ">= 22.x"
+  }
+}

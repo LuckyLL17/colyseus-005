@@ -1,0 +1,273 @@
+import postgres from 'postgres';
+import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import { pgTable, integer, boolean, timestamp, jsonb, getTableConfig, varchar } from 'drizzle-orm/pg-core';
+import { eq, and, inArray, sql } from 'drizzle-orm';
+
+import {
+  type IRoomCache,
+  type MatchMakerDriver,
+  type Room,
+  type SortOptions,
+  debugMatchMaking,
+  matchMaker,
+} from '@colyseus/core';
+
+import { sanitizeRoomData, generateCreateTableSQL, buildWhereClause, buildOrderBy } from './utils.ts';
+
+/**
+ * Define default `roomcaches` table schema using Drizzle
+ * May be overridden by the user by providing a custom schema in the constructor.
+ */
+export const roomcaches = pgTable('roomcaches_v1', {
+  roomId: varchar({ length: 9 }).primaryKey(),
+  processId: varchar({ length: 9 }),
+  name: varchar({ length: 64 }).notNull(),
+  clients: integer().notNull(),
+  maxClients: integer().notNull(),
+  locked: boolean(),
+  private: boolean(),
+  metadata: jsonb(),
+  publicAddress: varchar({ length: 255 }),
+  createdAt: timestamp().notNull().defaultNow(),
+  unlisted: boolean(),
+});
+
+export type RoomCache = typeof roomcaches.$inferSelect;
+
+export class PostgresDriver implements MatchMakerDriver {
+  private sql: ReturnType<typeof postgres>;
+  private db: PostgresJsDatabase;
+  private schema: typeof roomcaches;
+
+  constructor(options?: {
+    db?: PostgresJsDatabase;
+    schema?: typeof roomcaches;
+  }) {
+    // Allow user to provide their own roomcaches schema
+    this.schema = options?.schema || roomcaches;
+
+    if (options?.db) {
+      this.db = options.db;
+      this.sql = null as any; // User is managing their own connection
+
+    } else {
+      this.sql = postgres(process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/postgres');
+      this.db = drizzle(this.sql);
+      // this.db = drizzle(this.sql, { logger: true });
+    }
+  }
+
+  public async boot() {
+    if (!this.sql) {
+      throw new Error('PostgresDriver: Cannot call boot() when using external database instance. Please manage schema initialization externally.');
+    }
+
+    const tableConfig = getTableConfig(this.schema);
+    const tableName = tableConfig.name;
+
+    // Create table if it doesn't exist
+    // Use CREATE TABLE IF NOT EXISTS directly - it's atomic and handles concurrent calls
+    try {
+      await this.sql.unsafe(generateCreateTableSQL(tableConfig));
+      debugMatchMaking(`DrizzleDriver: created ${tableName} table`);
+
+    } catch (error: any) {
+      // Ignore "already exists" errors (code 42P07) and duplicate type errors
+      // These can occur when multiple processes try to create the table concurrently
+      if (error?.code === '42P07' || error?.code === '42710') {
+        debugMatchMaking(`DrizzleDriver: ${tableName} table already exists`);
+      } else {
+        debugMatchMaking(`DrizzleDriver: error creating ${tableName} table:`, error);
+        throw error;
+      }
+    }
+  }
+
+  public async has(roomId: string) {
+    const result = await this.db
+      .select()
+      .from(this.schema)
+      .where(eq(this.schema.roomId, roomId))
+      .limit(1);
+    return result.length > 0;
+  }
+
+  public async query<T extends Room = any>(
+    conditions: Partial<IRoomCache & matchMaker.ExtractRoomCacheMetadata<T>>,
+    sortOptions?: SortOptions
+  ): Promise<Array<IRoomCache<matchMaker.ExtractRoomCacheMetadata<T>>>> {
+    return await this.getRooms<T>(conditions, sortOptions);
+  }
+
+  public async cleanup(processId: string) {
+    const { count } = await this.db
+      .delete(this.schema)
+      .where(eq(this.schema.processId, processId))
+      .execute();
+    debugMatchMaking(`DrizzleDriver: removing stale rooms by processId ${processId} (${count} rooms found)`);
+  }
+
+  public async findOne<T extends Room = any>(
+    conditions: Partial<IRoomCache & matchMaker.ExtractRoomCacheMetadata<T>>,
+    sortOptions?: SortOptions
+  ) {
+    if (typeof conditions.roomId !== 'undefined') {
+      return (await this.db
+        .select()
+        .from(this.schema)
+        .where(eq(this.schema.roomId, conditions.roomId))
+        .limit(1))[0] as IRoomCache<matchMaker.ExtractRoomCacheMetadata<T>>;
+
+    } else {
+      // filter list by other conditions
+      return (await this.getRooms<T>(conditions, sortOptions, 1))[0];
+    }
+  }
+
+  public async findByIds(roomIds: string[]): Promise<Map<string, IRoomCache>> {
+    const result = new Map<string, IRoomCache>();
+    if (roomIds.length === 0) { return result; }
+    const rows = await this.db
+      .select()
+      .from(this.schema)
+      .where(inArray(this.schema.roomId, roomIds));
+    for (const row of rows) { result.set(row.roomId, row as IRoomCache); }
+    return result;
+  }
+
+  private getRooms<T extends Room = any>(
+    conditions: Partial<IRoomCache & matchMaker.ExtractRoomCacheMetadata<T>>,
+    sortOptions?: SortOptions,
+    limit?: number
+  ): Promise<Array<IRoomCache<matchMaker.ExtractRoomCacheMetadata<T>>>> {
+    const registeredHandler = matchMaker.getAllHandlers()[conditions.name];
+
+    let query = this.db
+      .select()
+      .from(this.schema)
+      .where(and(...buildWhereClause(registeredHandler, this.schema, conditions)))
+      .$dynamic();
+
+    // Apply order by if provided
+    const orderBy = buildOrderBy(registeredHandler, this.schema, sortOptions);
+    if (orderBy.length > 0) { query = query.orderBy(...orderBy); }
+
+    // Apply limit if provided
+    if (limit !== undefined) { query = query.limit(limit); }
+
+    return query.then((result) => result.map((room) => room as IRoomCache<matchMaker.ExtractRoomCacheMetadata<T>>));
+  }
+
+  public async update(room: IRoomCache, operations: Partial<{ $set: Partial<IRoomCache>, $inc: Partial<IRoomCache> }>) {
+    const setFields: any = {};
+    let clientsIncrement: number | undefined;
+
+    if (operations.$set) {
+      for (const field in operations.$set) {
+        if (operations.$set.hasOwnProperty(field) && operations.$set[field] !== undefined) {
+          setFields[field] = operations.$set[field];
+        }
+      }
+    }
+
+    if (operations.$inc) {
+      for (const field in operations.$inc) {
+        if (operations.$inc.hasOwnProperty(field)) {
+          const value = operations.$inc[field];
+          if (value !== undefined) {
+            setFields[field] = (value >= 0)
+              ? sql`${this.schema[field]} + ${value}::integer`
+              : sql`${this.schema[field]} - ${Math.abs(value)}::integer`;
+
+            // Track client increment for atomic locked calculation
+            if (field === 'clients') {
+              clientsIncrement = value;
+            }
+          }
+        }
+      }
+    }
+
+    // Skip update if there are no fields to update
+    if (Object.keys(setFields).length === 0) {
+      return true;
+    }
+
+    //
+    // When incrementing clients and setting locked, compute locked atomically
+    // based on the new clients value to prevent race conditions.
+    //
+    // Race condition scenario:
+    // 1. Client A reserves seat, sees 1 reserved seat, locked should stay false
+    // 2. Client B reserves seat, sees 2 reserved seats, locked should become true
+    // 3. Both execute UPDATE concurrently with their local locked values
+    // 4. If Client A's update executes last, it overwrites locked=true with locked=false
+    //
+    // Solution: Compute locked in SQL based on new clients value
+    //
+    // Note: Only apply this for increments (clientsIncrement > 0), not decrements.
+    // Decrements are handled locally with proper explicit lock checks.
+    //
+    // Use OR to preserve any existing explicit lock:
+    //   locked = locked OR (new_clients >= maxClients)
+    //
+    if (clientsIncrement !== undefined && clientsIncrement > 0 && setFields.locked !== undefined) {
+      setFields.locked = sql`${this.schema.locked} OR ((${this.schema.clients} + ${clientsIncrement}::integer) >= ${this.schema.maxClients})`;
+    }
+
+    await this.db
+      .update(this.schema)
+      .set(setFields)
+      .where(eq(this.schema.roomId, room.roomId))
+      .execute();
+
+    return true;
+  }
+
+  public async persist(room: IRoomCache, create: boolean = false) {
+    if (create) {
+      // Create new record
+      const insertFields: any = sanitizeRoomData(this.schema, room);
+      await this.db.insert(this.schema).values(insertFields);
+
+    } else {
+      // Update existing record
+      const updateFields: any = sanitizeRoomData(this.schema, room);
+      delete updateFields.roomId; // Don't update the primary key
+      await this.update(room, { $set: updateFields });
+    }
+
+    return true;
+  }
+
+  public async remove(roomId: string) {
+    const { count } = await this.db
+      .delete(this.schema)
+      .where(eq(this.schema.roomId, roomId))
+      .execute();
+    return count > 0;
+  }
+
+  public async shutdown() {
+    // Only close the connection if we created it ourselves
+    if (this.sql) {
+      await this.sql.end();
+      this.sql = undefined;
+    }
+  }
+
+  public async clear() {
+    // skip if already shut down.
+    if (!this.sql) { return; }
+
+    const tableConfig = getTableConfig(this.schema);
+    const tableName = tableConfig.name;
+
+    // Drop the table completely to ensure schema is fresh
+    await this.sql.unsafe(`DROP TABLE IF EXISTS ${tableName} CASCADE`);
+
+    // Recreate the table using schema definition
+    await this.sql.unsafe(generateCreateTableSQL(tableConfig));
+  }
+
+}

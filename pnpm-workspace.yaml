@@ -1,0 +1,18 @@
+packages:
+  - bundles/*
+  - packages/*
+  - packages/better-call/packages/*
+  - packages/drivers/*
+  - packages/transport/*
+  - packages/presence/*
+  - packages/serializer/*
+  - packages/room-plugins/*
+
+onlyBuiltDependencies:
+  - '@biomejs/biome'
+  - '@fails-components/webtransport-transport-http3-quiche'
+  - '@parcel/watcher'
+  - esbuild
+  - msgpackr-extract
+  - nx
+  - puppeteer

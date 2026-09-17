@@ -1,0 +1,104 @@
+// <reference types="bun-types" />
+
+// "bun-types" is currently conflicting with "ws" types.
+// @ts-ignore
+import type { ServerWebSocket } from 'bun';
+import EventEmitter from 'events';
+
+import { Protocol, type Client, type ClientPrivate, ClientState, type ISendOptions, getMessageBytes, logger, debugMessage, enqueueClientRaw } from '@colyseus/core';
+
+export class WebSocketWrapper extends EventEmitter {
+  public ws: ServerWebSocket<any>;
+
+  constructor(ws: ServerWebSocket<any>) {
+    super();
+    this.ws = ws;
+  }
+}
+
+export class WebSocketClient implements Client, ClientPrivate {
+  '~messages': any;
+
+  public id: string;
+  public ref: WebSocketWrapper;
+
+  public sessionId: string;
+  public state: ClientState = ClientState.JOINING;
+  public reconnectionToken: string;
+
+  public _enqueuedMessages: any[] = [];
+  public _reconnectionToken: string;
+  public _joinedAt: number;
+
+  constructor(id: string, ref: WebSocketWrapper,) {
+    this.id = this.sessionId = id;
+    this.ref = ref;
+  }
+
+  public sendBytes(type: string | number, bytes: Buffer | Uint8Array, options?: ISendOptions) {
+    debugMessage("send bytes(to %s): '%s' -> %j", this.sessionId, type, bytes);
+
+    this.enqueueRaw(
+      getMessageBytes.raw(Protocol.ROOM_DATA_BYTES, type, undefined, bytes),
+      options,
+    );
+  }
+
+  public send(messageOrType: any, messageOrOptions?: any | ISendOptions, options?: ISendOptions) {
+    debugMessage("send(to %s): '%s' -> %j", this.sessionId, messageOrType, messageOrOptions);
+
+    this.enqueueRaw(
+      getMessageBytes.raw(Protocol.ROOM_DATA, messageOrType, messageOrOptions),
+      options,
+    );
+  }
+
+  public enqueueRaw(data: Uint8Array | Buffer, options?: ISendOptions) {
+    enqueueClientRaw(this, data, options);
+  }
+
+  public raw(data: Uint8Array | Buffer, options?: ISendOptions, cb?: (err?: Error) => void) {
+    // skip if client not open
+
+    // WebSocket is globally available on Bun runtime
+    // @ts-ignore
+    if (this.ref.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    // Bun's sendBinary requires an ArrayBufferView (Uint8Array, etc).
+    // Ensure we don't pass a plain number[] array.
+    this.ref.ws.sendBinary(ArrayBuffer.isView(data) ? data : new Uint8Array(data));
+  }
+
+  public error(code: number, message: string = '', cb?: (err?: Error) => void) {
+    this.raw(getMessageBytes[Protocol.ERROR](code, message));
+
+    if (cb) {
+      // (same API as "ws" transport)
+      setTimeout(cb, 1);
+    }
+  }
+
+  get readyState() {
+    return this.ref.ws.readyState;
+  }
+
+  public leave(code?: number, data?: string) {
+    this.ref.ws.close(code, data);
+  }
+
+  public close(code?: number, data?: string) {
+    logger.warn('DEPRECATION WARNING: use client.leave() instead of client.close()');
+    try {
+      throw new Error();
+    } catch (e: any) {
+      logger.info(e.stack);
+    }
+    this.leave(code, data);
+  }
+
+  public toJSON() {
+    return { sessionId: this.sessionId, readyState: this.readyState };
+  }
+}

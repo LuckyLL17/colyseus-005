@@ -1,0 +1,53 @@
+{
+  "name": "@colyseus/bun-websockets",
+  "version": "0.18.2",
+  "type": "module",
+  "input": "./src/index.ts",
+  "main": "./build/index.cjs",
+  "module": "./src/index.ts",
+  "typings": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "@source": "./src/index.ts",
+      "types": "./build/index.d.ts",
+      "import": "./build/index.mjs",
+      "require": "./build/index.cjs"
+    },
+    "./*": {
+      "@source": "./src/*.ts",
+      "types": "./build/*.d.ts",
+      "import": "./build/*.mjs",
+      "require": "./build/*.cjs"
+    }
+  },
+  "dependencies": {
+    "@colyseus/core": "workspace:^",
+    "bun-serve-express": "^2.0.2"
+  },
+  "devDependencies": {
+    "@colyseus/core": "workspace:^",
+    "@colyseus/sdk": "workspace:^",
+    "bun-types": "^1.2.0"
+  },
+  "author": "Endel Dreyer",
+  "license": "MIT",
+  "keywords": [
+    "colyseus",
+    "transport",
+    "websockets",
+    "bun"
+  ],
+  "files": [
+    "build",
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/colyseus/colyseus.git"
+  },
+  "homepage": "https://colyseus.io/",
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  }
+}

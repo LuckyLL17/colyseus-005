@@ -1,0 +1,50 @@
+# Changelog
+
+## 0.18.3
+
+- Runs on Debian 12 again, and on any other system with glibc older than 2.38. Fresh installs there crashed at startup with ``version `GLIBC_2.38' not found``. uWebSockets.js is pinned to v20.52.0, which covers Node.js 20, 22 and 24; Node.js 25 (end-of-life) is no longer supported.
+
+## 0.18.2
+
+- New `beforeUpgrade` option: called before the WebSocket handshake with the incoming `Request` and the same read-only context `onAuth()` receives. Return a `Response` to answer the request instead of upgrading it. Requires `@colyseus/core` 0.18.5.
+
+- The 0.17.21 request-body fixes reach the 0.18 line: an incomplete or slow HTTP body is answered with `408 Request Timeout` instead of crashing the process, and `readBodyMaxTime` configures the limit. They had only ever shipped for 0.17.
+
+## 0.18.1
+
+- Internal: `enqueueRaw()` now delegates to `enqueueClientRaw()` from `@colyseus/core`, which centralizes join-time message buffering and `afterNextPatch` routing; the per-client `_afterNextPatchQueue` field is gone. Requires `@colyseus/core` 0.18.1.
+
+## 0.17.21
+
+- Fix process-wide crash (`ERR_UNHANDLED_ERROR`) when an HTTP request body is incomplete or arrives too slowly — remotely triggerable by advertising a `Content-Length` and withholding the body. Such requests are now answered with `408 Request Timeout` and the server stays operational. Works with currently published `uwebsockets-express` versions (colyseus/uWebSockets-express#43, thanks to @pierroo)
+- Add `readBodyMaxTime` transport option: maximum time (in milliseconds) allowed while reading an HTTP request body before responding `408` (default: `500`). Previously this limit was hard-coded and could not be configured through the transport.
+
+## 0.17.20
+
+- Use `MAY_TRY_RECONNECT` close code (instead of `FAILED_TO_RECONNECT`) in devMode when a reconnection token is present but the seat hasn't been reserved yet. This allows the SDK to retry during the brief HMR reload window.
+
+## 0.17.19
+
+- Enqueue messages sent during `onReconnect()`, ensuring they arrive after the client completes the reconnection handshake.
+- Fix `Invalid access of closed uWS.WebSocket/SSLWebSocket` crash when socket closes before deferred `error()` callback fires (#925)
+
+## 0.17.18
+
+- Fix `Invalid access of closed uWS.WebSocket/SSLWebSocket` crash when socket closes before deferred `error()` callback fires (#925)
+
+## 0.17.17
+
+- Fix `uWS.HttpResponse must not be accessed after onAborted callback` error when client disconnects during Express-handled requests (#924)
+
+## 0.17.16
+
+- Fix `HPE_UNEXPECTED_CONTENT_LENGTH` error (#908), thanks to @lkinasiewicz
+
+## 0.17.15
+
+- Fix express and auth routes hanging. Use `@colyseus/better-auth` version that exposes `.findRoute()`.
+
+## 0.17.14
+
+- Fix order of header write order on HTTP requests, which was conflicting with `serve-index` Express module.
+
