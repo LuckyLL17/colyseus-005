@@ -16,6 +16,13 @@ export class LocalPresence implements Presence {
 
     public keys: {[name: string]: string | number} = Object.create(null);
 
+    // Monotonic per-key generation. expire() bumps it when scheduling a TTL,
+    // and creating a fresh value (set/del/re-create via sadd/hset/rpush) bumps
+    // it again — so a timeout scheduled against a previous lifecycle can't
+    // delete the new value. Mutations of an existing container (sadd/hset on a
+    // key that already exists) keep its TTL, like Redis.
+    public generations: {[name: string]: number} = Object.create(null);
+
     private timeouts: {[name: string]: NodeJS.Timeout} = Object.create(null);
 
     constructor() {
@@ -75,15 +82,13 @@ export class LocalPresence implements Presence {
     }
 
     public async exists(key: string): Promise<boolean> {
-        return (
-          this.keys[key] !== undefined ||
-          this.data[key] !== undefined ||
-          this.hash[key] !== undefined
-        );
+        return this.keyExists(key);
     }
 
     public set(key: string, value: string) {
         this.keys[key] = value;
+        // like Redis SET, rewriting the value starts a new (TTL-less) lifecycle
+        this.invalidateExpire(key);
     }
 
     public setex(key: string, value: string, seconds: number) {
@@ -96,10 +101,42 @@ export class LocalPresence implements Presence {
         if (this.timeouts[key]) {
             clearTimeout(this.timeouts[key]);
         }
+
+        const generation = (this.generations[key] ?? 0) + 1;
+        this.generations[key] = generation;
+
         this.timeouts[key] = setTimeout(() => {
+            // the key may have been deleted and recreated meanwhile; only
+            // remove it if this timeout still owns the current lifecycle
+            if (this.generations[key] !== generation) { return; }
+
             delete this.keys[key];
+            delete this.data[key];
+            delete this.hash[key];
             delete this.timeouts[key];
+            delete this.generations[key];
         }, seconds * 1000);
+    }
+
+    /**
+     * Detach any TTL previously set on this key. Called whenever the key is
+     * (re)created with a fresh value: it gets its own lifecycle instead of
+     * being deleted by a timeout scheduled for the old value.
+     */
+    private invalidateExpire(key: string) {
+        this.generations[key] = (this.generations[key] ?? 0) + 1;
+        if (this.timeouts[key]) {
+            clearTimeout(this.timeouts[key]);
+            delete this.timeouts[key];
+        }
+    }
+
+    private keyExists(key: string) {
+        return (
+          this.keys[key] !== undefined ||
+          this.data[key] !== undefined ||
+          this.hash[key] !== undefined
+        );
     }
 
     public get(key: string) {
@@ -110,15 +147,24 @@ export class LocalPresence implements Presence {
         delete this.keys[key];
         delete this.data[key];
         delete this.hash[key];
+        this.invalidateExpire(key);
     }
 
     public sadd(key: string, value: any) {
+        // SADD on an existing set preserves its TTL (same as Redis). Only a
+        // freshly (re)created key starts a new, TTL-less lifecycle.
+        const isNewKey = !this.keyExists(key);
+
         if (!this.data[key]) {
             this.data[key] = [];
         }
 
         if (this.data[key].indexOf(value) === -1) {
             this.data[key].push(value);
+        }
+
+        if (isNewKey) {
+            this.invalidateExpire(key);
         }
     }
 
@@ -162,16 +208,30 @@ export class LocalPresence implements Presence {
     }
 
     public hset(key: string, field: string, value: string) {
+        // HSET on an existing hash preserves its TTL (same as Redis). Only a
+        // freshly (re)created key starts a new, TTL-less lifecycle.
+        const isNewKey = !this.keyExists(key);
+
         if (!this.hash[key]) { this.hash[key] = Object.create(null); }
         this.hash[key][field] = value;
+
+        if (isNewKey) {
+            this.invalidateExpire(key);
+        }
         return Promise.resolve(true);
     }
 
     public hincrby(key: string, field: string, incrBy: number) {
+        const isNewKey = !this.keyExists(key);
+
         if (!this.hash[key]) { this.hash[key] = Object.create(null); }
         let value = Number(this.hash[key][field] || '0');
         value += incrBy;
         this.hash[key][field] = value.toString();
+
+        if (isNewKey) {
+            this.invalidateExpire(key);
+        }
         return Promise.resolve(value);
     }
 
@@ -185,13 +245,9 @@ export class LocalPresence implements Presence {
         // FIXME: delete only hash[key][field]
         // (we can't use "HEXPIRE" in Redis because it's only available since Redis version 7.4.0+)
         //
-        if (this.timeouts[key]) {
-          clearTimeout(this.timeouts[key]);
-        }
-        this.timeouts[key] = setTimeout(() => {
-            delete this.hash[key];
-            delete this.timeouts[key];
-        }, expireInSeconds * 1000);
+        // expire() bumps the key's generation, so any timeout left over from a
+        // previous lifecycle (or an earlier hincrbyex() call) is detached.
+        this.expire(key, expireInSeconds);
 
         return Promise.resolve(value);
     }
@@ -239,6 +295,9 @@ export class LocalPresence implements Presence {
     }
 
     public rpush(key: string, ...values: string[]): Promise<number> {
+      // pushing onto an existing list preserves its TTL (same as Redis).
+      const isNewKey = !this.keyExists(key);
+
       if (!this.data[key]) { this.data[key] = []; }
 
       let lastLength: number = 0;
@@ -247,10 +306,17 @@ export class LocalPresence implements Presence {
         lastLength = this.data[key].push(value);
       });
 
+      if (isNewKey) {
+        this.invalidateExpire(key);
+      }
+
       return Promise.resolve(lastLength);
     }
 
     public lpush(key: string, ...values: string[]): Promise<number> {
+      // pushing onto an existing list preserves its TTL (same as Redis).
+      const isNewKey = !this.keyExists(key);
+
       if (!this.data[key]) { this.data[key] = []; }
 
       let lastLength: number = 0;
@@ -258,6 +324,10 @@ export class LocalPresence implements Presence {
       values.forEach(value => {
         lastLength = this.data[key].unshift(value);
       });
+
+      if (isNewKey) {
+        this.invalidateExpire(key);
+      }
 
       return Promise.resolve(lastLength);
     }

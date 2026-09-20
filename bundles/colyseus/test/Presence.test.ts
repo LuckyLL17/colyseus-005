@@ -182,6 +182,154 @@ describe("Presence", () => {
         assert.ok(!(await presence.get("setex1")));
       });
 
+      describe("expire", () => {
+        it("expire should remove a set created with sadd", async () => {
+          await presence.sadd("expire-set", "one");
+          await presence.sadd("expire-set", "two");
+          await presence.expire("expire-set", 0.1);
+
+          assert.deepEqual(["one", "two"], await presence.smembers("expire-set"));
+          assert.equal(true, await presence.exists("expire-set"));
+
+          await timeout(250);
+
+          assert.deepEqual([], await presence.smembers("expire-set"));
+          assert.equal(0, await presence.scard("expire-set"));
+          assert.equal(0, await presence.sismember("expire-set", "one"));
+          assert.equal(false, await presence.exists("expire-set"));
+        });
+
+        it("expire should remove a hash created with hset", async () => {
+          await presence.hset("expire-hash", "one", "1");
+          await presence.hset("expire-hash", "two", "2");
+          await presence.expire("expire-hash", 0.1);
+
+          assert.equal("1", await presence.hget("expire-hash", "one"));
+          assert.deepEqual({ one: "1", two: "2" }, await presence.hgetall("expire-hash"));
+          assert.equal(true, await presence.exists("expire-hash"));
+
+          await timeout(250);
+
+          assert.equal(null, await presence.hget("expire-hash", "one"));
+          assert.deepEqual({}, await presence.hgetall("expire-hash"));
+          assert.equal(0, await presence.hlen("expire-hash"));
+          assert.equal(false, await presence.exists("expire-hash"));
+        });
+
+        it("expire on a string should remove the key", async () => {
+          await presence.set("expire-string", "value");
+          await presence.expire("expire-string", 0.1);
+
+          assert.equal("value", await presence.get("expire-string"));
+
+          await timeout(250);
+
+          assert.equal(null, await presence.get("expire-string"));
+          assert.equal(false, await presence.exists("expire-string"));
+        });
+
+        it("re-expire should extend the key's lifetime", async () => {
+          await presence.setex("re-expire", "value", 0.3);
+          await timeout(200);
+
+          // still alive, extend for another 0.3s
+          await presence.expire("re-expire", 0.3);
+          await timeout(200);
+          assert.equal("value", await presence.get("re-expire"));
+
+          await timeout(200);
+          assert.equal(null, await presence.get("re-expire"));
+        });
+
+        it("set before TTL elapses should keep the rewritten value", async () => {
+          await presence.setex("rewrite-string", "old", 0.1);
+          await timeout(50);
+
+          // plain SET rewrites the value and clears the TTL
+          await presence.set("rewrite-string", "new");
+
+          await timeout(250);
+          assert.equal("new", await presence.get("rewrite-string"));
+          assert.equal(true, await presence.exists("rewrite-string"));
+
+          await presence.del("rewrite-string");
+        });
+
+        it("setex before TTL elapses should follow the new TTL", async () => {
+          await presence.setex("rewrite-setex", "old", 0.3);
+          await timeout(50);
+
+          // rewrite with a fresh, shorter lifecycle
+          await presence.setex("rewrite-setex", "new", 0.1);
+          await timeout(50);
+          assert.equal("new", await presence.get("rewrite-setex"));
+
+          // the old (0.3s) lifecycle must not have deleted the new value...
+          await timeout(350);
+          assert.equal(null, await presence.get("rewrite-setex"));
+        });
+
+        it("del before TTL elapses, then re-create, should not be deleted by the old timeout", async () => {
+          await presence.setex("rewrite-del", "old", 0.1);
+          await timeout(50);
+          await presence.del("rewrite-del");
+
+          await presence.set("rewrite-del", "new");
+          await timeout(250);
+          assert.equal("new", await presence.get("rewrite-del"));
+
+          await presence.del("rewrite-del");
+        });
+      });
+
+      describe("mixed key types sharing the same name", () => {
+        it("string, set and hash lifecycles must not leak across types", async () => {
+          const key = "mixed-key";
+
+          // string lifecycle expires
+          await presence.setex(key, "string-value", 0.1);
+          assert.equal("string-value", await presence.get(key));
+          await timeout(250);
+          assert.equal(false, await presence.exists(key));
+          assert.equal(null, await presence.get(key));
+
+          // same name, now a set: old string timeout must not delete it
+          await presence.sadd(key, "member");
+          assert.equal(true, await presence.exists(key));
+          assert.deepEqual(["member"], await presence.smembers(key));
+          await timeout(250);
+          assert.deepEqual(["member"], await presence.smembers(key));
+
+          // give the set its own TTL
+          await presence.expire(key, 0.1);
+          await timeout(250);
+          assert.equal(false, await presence.exists(key));
+          assert.deepEqual([], await presence.smembers(key));
+
+          // same name, now a hash: old set timeout must not delete it
+          await presence.hset(key, "field", "hash-value");
+          assert.equal(true, await presence.exists(key));
+          assert.equal("hash-value", await presence.hget(key, "field"));
+          await timeout(250);
+          assert.equal("hash-value", await presence.hget(key, "field"));
+
+          await presence.expire(key, 0.1);
+          await timeout(250);
+          assert.equal(false, await presence.exists(key));
+          assert.deepEqual({}, await presence.hgetall(key));
+
+          // back to a string: old hash timeout must not delete it
+          await presence.setex(key, "again", 0.3);
+          await timeout(50);
+          await presence.set(key, "persisted");
+          await timeout(400);
+          assert.equal("persisted", await presence.get(key));
+
+          await presence.del(key);
+          assert.equal(false, await presence.exists(key));
+        });
+      });
+
       it("get", async () => {
         await presence.setex("setex2", "one", 1);
         assert.equal("one", await presence.get("setex2"));
@@ -393,6 +541,123 @@ describe("Presence", () => {
         });
 
       });
+
+      // LocalPresence keeps in-memory timers; these cover timer bookkeeping
+      // that the Redis server handles natively.
+      if (PRESENCE_IMPLEMENTATIONS[i] === LocalPresence) {
+        describe("LocalPresence: TTL lifecycle bookkeeping", () => {
+          it("sadd onto an expiring set should keep the set's TTL (Redis parity)", async () => {
+            presence.sadd("rewrite-set", "one");
+            presence.expire("rewrite-set", 0.2);
+
+            await timeout(50);
+            // adding a member to an *existing* set does not reset its TTL
+            presence.sadd("rewrite-set", "two");
+
+            await timeout(100);
+            assert.deepEqual(["one", "two"], await presence.smembers("rewrite-set"));
+
+            // original TTL (t≈200ms) removes the whole set
+            await timeout(150);
+            assert.deepEqual([], await presence.smembers("rewrite-set"));
+            assert.strictEqual(false, await presence.exists("rewrite-set"));
+          });
+
+          it("sadd after del+re-create should not be deleted by the old timeout", async () => {
+            presence.sadd("rewrite-set2", "one");
+            presence.expire("rewrite-set2", 0.1);
+            await timeout(50);
+            presence.del("rewrite-set2");
+
+            // same name, newly created set: the old 0.1s timeout must not fire on it
+            presence.sadd("rewrite-set2", "two");
+            await timeout(200);
+            assert.deepEqual(["two"], await presence.smembers("rewrite-set2"));
+            assert.strictEqual(true, await presence.exists("rewrite-set2"));
+
+            presence.del("rewrite-set2");
+          });
+
+          it("hset onto an expiring hash should keep the hash's TTL (Redis parity)", async () => {
+            await presence.hset("rewrite-hash", "one", "1");
+            presence.expire("rewrite-hash", 0.2);
+
+            await timeout(50);
+            // adding a field to an *existing* hash does not reset its TTL
+            await presence.hset("rewrite-hash", "two", "2");
+
+            await timeout(100);
+            assert.strictEqual("1", await presence.hget("rewrite-hash", "one"));
+            assert.strictEqual("2", await presence.hget("rewrite-hash", "two"));
+
+            // original TTL (t≈200ms) removes the whole hash
+            await timeout(150);
+            assert.strictEqual(null, await presence.hget("rewrite-hash", "one"));
+            assert.strictEqual(false, await presence.exists("rewrite-hash"));
+          });
+
+          it("hset after del+re-create should not be deleted by the old timeout", async () => {
+            await presence.hset("rewrite-hash2", "one", "1");
+            presence.expire("rewrite-hash2", 0.1);
+            await timeout(50);
+            presence.del("rewrite-hash2");
+
+            // same name, newly created hash: the old 0.1s timeout must not fire on it
+            await presence.hset("rewrite-hash2", "two", "2");
+            await timeout(200);
+            assert.strictEqual("2", await presence.hget("rewrite-hash2", "two"));
+            assert.strictEqual(true, await presence.exists("rewrite-hash2"));
+
+            await presence.del("rewrite-hash2");
+          });
+
+          it("a type change after expire should not be deleted by the old key's timeout", async () => {
+            presence.sadd("type-swap", "member");
+            presence.expire("type-swap", 0.1);
+            await timeout(50);
+            presence.del("type-swap");
+
+            // same name, different type, new lifecycle
+            await presence.hset("type-swap", "field", "value");
+            await timeout(150);
+            assert.strictEqual("value", await presence.hget("type-swap", "field"));
+            assert.strictEqual(true, await presence.exists("type-swap"));
+
+            await presence.del("type-swap");
+            await timeout(150);
+            assert.strictEqual(false, await presence.exists("type-swap"));
+          });
+
+          it("hincrbyex refresh should follow the latest expiry", async () => {
+            await presence.hincrbyex("hincrbyex-refresh", "f", 1, 0.3);
+            await timeout(100);
+            // -1 + refreshed 0.4s TTL: the original 0.3s timeout (t≈0) is detached
+            await presence.hincrbyex("hincrbyex-refresh", "f", -1, 0.4);
+
+            await timeout(350); // t≈450ms: original TTL (t≈300) must have been detached
+            assert.strictEqual("0", await presence.hget("hincrbyex-refresh", "f"));
+            assert.strictEqual(true, await presence.exists("hincrbyex-refresh"));
+
+            await timeout(200); // t≈650ms: refreshed TTL (t≈100+400) has fired
+            assert.strictEqual(null, await presence.hget("hincrbyex-refresh", "f"));
+            assert.strictEqual(false, await presence.exists("hincrbyex-refresh"));
+          });
+
+          it("expired set/hash leaves no dangling timers", async () => {
+            presence.sadd("dangling-set", "a");
+            presence.expire("dangling-set", 0.1);
+            await presence.hset("dangling-hash", "f", "v");
+            presence.expire("dangling-hash", 0.1);
+
+            await timeout(250);
+
+            assert.strictEqual(undefined, (presence as LocalPresence)["timeouts"]["dangling-set"]);
+            assert.strictEqual(undefined, (presence as LocalPresence)["timeouts"]["dangling-hash"]);
+            assert.strictEqual(undefined, (presence as LocalPresence)["generations"]["dangling-set"]);
+            assert.strictEqual(undefined, (presence as LocalPresence)["generations"]["dangling-hash"]);
+          });
+        });
+      }
 
     });
 
