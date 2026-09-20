@@ -182,6 +182,74 @@ describe("Presence", () => {
         assert.ok(!(await presence.get("setex1")));
       });
 
+      describe("expire", () => {
+        it("should expire sets", async () => {
+          await presence.sadd("expire-set", "one");
+          await presence.sadd("expire-set", "two");
+          await presence.expire("expire-set", 1);
+
+          assert.deepEqual(["one", "two"], (await presence.smembers("expire-set")).sort());
+          assert.equal(true, await presence.exists("expire-set"));
+
+          await timeout(1100);
+
+          assert.deepEqual([], await presence.smembers("expire-set"));
+          assert.equal(0, await presence.scard("expire-set"));
+          assert.equal(false, await presence.exists("expire-set"));
+        });
+
+        it("should expire hashes", async () => {
+          await presence.hset("expire-hash", "one", "1");
+          await presence.hset("expire-hash", "two", "2");
+          await presence.expire("expire-hash", 1);
+
+          assert.equal("1", await presence.hget("expire-hash", "one"));
+          assert.equal(true, await presence.exists("expire-hash"));
+
+          await timeout(1100);
+
+          assert.strictEqual(null, await presence.hget("expire-hash", "one"));
+          assert.deepEqual({}, await presence.hgetall("expire-hash"));
+          assert.equal(0, await presence.hlen("expire-hash"));
+          assert.equal(false, await presence.exists("expire-hash"));
+        });
+
+        it("set() should clear the previous TTL", async () => {
+          await presence.setex("expire-set-clear", "one", 1);
+          await presence.set("expire-set-clear", "two");
+
+          await timeout(1100);
+          assert.equal("two", await presence.get("expire-set-clear"));
+        });
+
+        it("setex() should apply the new lifecycle when re-writing", async () => {
+          await presence.setex("expire-setex", "one", 1);
+          await timeout(500);
+          await presence.setex("expire-setex", "two", 2);
+
+          await timeout(700); // 1.2s: past the first TTL
+          assert.equal("two", await presence.get("expire-setex"));
+
+          await timeout(1500); // 2.7s: past the second TTL
+          assert.ok(!(await presence.get("expire-setex")));
+        });
+
+        it("del() should cancel the pending TTL", async () => {
+          await presence.setex("expire-del", "one", 1);
+          await presence.del("expire-del");
+          await presence.sadd("expire-del", "member");
+
+          await timeout(1100);
+          assert.deepEqual(["member"], await presence.smembers("expire-del"));
+        });
+
+        it("incr() should start fresh after the key expires", async () => {
+          await presence.setex("expire-incr", "5", 1);
+          await timeout(1100);
+          assert.strictEqual(1, await presence.incr("expire-incr"));
+        });
+      });
+
       it("get", async () => {
         await presence.setex("setex2", "one", 1);
         assert.equal("one", await presence.get("setex2"));

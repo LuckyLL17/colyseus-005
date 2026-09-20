@@ -82,7 +82,16 @@ export class LocalPresence implements Presence {
         );
     }
 
+    private clearExpiry(key: string) {
+        if (this.timeouts[key]) {
+            clearTimeout(this.timeouts[key]);
+            delete this.timeouts[key];
+        }
+    }
+
     public set(key: string, value: string) {
+        // like Redis' SET, assigning a new value clears any previous TTL.
+        this.clearExpiry(key);
         this.keys[key] = value;
     }
 
@@ -93,11 +102,13 @@ export class LocalPresence implements Presence {
 
     public expire(key: string, seconds: number) {
         // ensure previous timeout is clear before setting another one.
-        if (this.timeouts[key]) {
-            clearTimeout(this.timeouts[key]);
-        }
+        this.clearExpiry(key);
         this.timeouts[key] = setTimeout(() => {
+            // like Redis' EXPIRE, the key is deleted regardless of its type:
+            // string, set/list and hash all go away once the TTL is up.
             delete this.keys[key];
+            delete this.data[key];
+            delete this.hash[key];
             delete this.timeouts[key];
         }, seconds * 1000);
     }
@@ -107,12 +118,19 @@ export class LocalPresence implements Presence {
     }
 
     public del(key: string) {
+        // like Redis' DEL, the key and its TTL are gone; a pending timeout
+        // must never delete a future incarnation of this key.
+        this.clearExpiry(key);
         delete this.keys[key];
         delete this.data[key];
         delete this.hash[key];
     }
 
     public sadd(key: string, value: any) {
+        // writing to the key starts a new lifecycle: a TTL scheduled for the
+        // previous value must not delete the new one.
+        this.clearExpiry(key);
+
         if (!this.data[key]) {
             this.data[key] = [];
         }
@@ -162,12 +180,18 @@ export class LocalPresence implements Presence {
     }
 
     public hset(key: string, field: string, value: string) {
+        // writing to the key starts a new lifecycle (see "sadd")
+        this.clearExpiry(key);
+
         if (!this.hash[key]) { this.hash[key] = Object.create(null); }
         this.hash[key][field] = value;
         return Promise.resolve(true);
     }
 
     public hincrby(key: string, field: string, incrBy: number) {
+        // writing to the key starts a new lifecycle (see "sadd")
+        this.clearExpiry(key);
+
         if (!this.hash[key]) { this.hash[key] = Object.create(null); }
         let value = Number(this.hash[key][field] || '0');
         value += incrBy;
@@ -185,13 +209,7 @@ export class LocalPresence implements Presence {
         // FIXME: delete only hash[key][field]
         // (we can't use "HEXPIRE" in Redis because it's only available since Redis version 7.4.0+)
         //
-        if (this.timeouts[key]) {
-          clearTimeout(this.timeouts[key]);
-        }
-        this.timeouts[key] = setTimeout(() => {
-            delete this.hash[key];
-            delete this.timeouts[key];
-        }, expireInSeconds * 1000);
+        this.expire(key, expireInSeconds);
 
         return Promise.resolve(value);
     }
@@ -239,6 +257,9 @@ export class LocalPresence implements Presence {
     }
 
     public rpush(key: string, ...values: string[]): Promise<number> {
+      // writing to the key starts a new lifecycle (see "sadd")
+      this.clearExpiry(key);
+
       if (!this.data[key]) { this.data[key] = []; }
 
       let lastLength: number = 0;
@@ -251,6 +272,9 @@ export class LocalPresence implements Presence {
     }
 
     public lpush(key: string, ...values: string[]): Promise<number> {
+      // writing to the key starts a new lifecycle (see "sadd")
+      this.clearExpiry(key);
+
       if (!this.data[key]) { this.data[key] = []; }
 
       let lastLength: number = 0;
